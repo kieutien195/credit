@@ -1,0 +1,68 @@
+{
+  "best_model": "ExtraTrees",
+  "selection_rule": "Validation Brier ascending, then LogLoss, then ROC-AUC",
+  "label_mapping": {
+    "chap_nhan_+": 1,
+    "tu_choi_-": 0
+  },
+  "threshold": 0.5,
+  "features": [
+    "A1",
+    "A2",
+    "A3",
+    "A4",
+    "A5",
+    "A6",
+    "A7",
+    "A8",
+    "A9",
+    "A10",
+    "A11",
+    "A12",
+    "A13",
+    "A14",
+    "A15"
+  ],
+  "numeric_columns": [
+    "A2",
+    "A3",
+    "A8",
+    "A11",
+    "A14",
+    "A15"
+  ],
+  "categorical_columns": [
+    "A1",
+    "A4",
+    "A5",
+    "A6",
+    "A7",
+    "A9",
+    "A10",
+    "A12",
+    "A13"
+  ],
+  "training_rows": 690,
+  "random_seed": 42,
+  "split": {
+    "train": 414,
+    "validation": 138,
+    "test": 138
+  },
+  "best_model_test_metrics": {
+    "Brier": 0.07673581906914557,
+    "LogLoss": 0.27425253017779977,
+    "ROC_AUC": 0.9642324888226528,
+    "Accuracy": 0.8913043478260869,
+    "F1_chap_nhan": 0.8780487804878049
+  },
+  "source_sha256": "fff49bc186cbddb3ace7371d40d9fbbb3af4f126019c13ff3f562249b1454f4d",
+  "python_version": "3.13.15",
+  "package_versions": {
+    "scikit-learn": "1.6.1",
+    "numpy": "2.1.3",
+    "pandas": "2.2.3",
+    "scipy": "1.16.3",
+    "joblib": "1.6.0"
+  }
+}
