@@ -190,23 +190,74 @@ st_autorefresh(
     key="credit_drive_refresh"
 )
 
-st.info(
-    "Tự đọc dữ liệu khi mở trang và cập nhật khoảng mỗi 60 giây "
-    "khi trang đang mở. Không cần upload."
+source_mode = st.radio(
+    "Nguồn dữ liệu",
+    options=[
+        "File mẫu trên Google Drive",
+        "Upload CSV của bạn"
+    ],
+    index=0,
+    horizontal=True
 )
 
-if st.button("Đọc lại nguồn ngay"):
-    read_drive_csv.clear()
-
 try:
-    with st.spinner("Đang đọc CSV từ Google Drive..."):
-        raw_data, checked_at = read_drive_csv(DRIVE_FILE_ID)
+    if source_mode == "File mẫu trên Google Drive":
+        st.info(
+            "Đang dùng file mẫu trên Drive. "
+            "Nguồn được đọc lại khoảng mỗi 60 giây khi trang đang mở."
+        )
 
-    st.caption(f"Lần đọc nguồn thành công: {checked_at}")
+        if st.button("Đọc lại nguồn ngay"):
+            read_drive_csv.clear()
+
+        with st.spinner("Đang đọc file mẫu từ Google Drive..."):
+            raw_data, checked_at = read_drive_csv(DRIVE_FILE_ID)
+
+        st.caption(
+            "File mẫu là dữ liệu giả lập để thử dự đoán. "
+            f"Lần đọc nguồn thành công: {checked_at}"
+        )
+
+    else:
+        st.info(
+            "Upload CSV có tiêu đề A1 đến A15. "
+            "Giá trị thiếu có thể để trống hoặc ghi '?'."
+        )
+
+        uploaded = st.file_uploader(
+            "Chọn file CSV",
+            type=["csv"],
+            key="custom_credit_csv"
+        )
+
+        if uploaded is None:
+            st.stop()
+
+        # Kiểm tra cột trùng trước khi pandas tự đổi tên.
+        text = uploaded.getvalue().decode("utf-8-sig")
+        header = next(csv.reader(io.StringIO(text)), [])
+        header = [name.strip() for name in header]
+
+        if not header:
+            raise ValueError("CSV không có tiêu đề.")
+
+        if len(header) != len(set(header)):
+            raise ValueError("CSV có tên cột bị trùng.")
+
+        raw_data = pd.read_csv(
+            io.StringIO(text),
+            na_values=["?", ""]
+        )
+
+        st.caption(f"File đã chọn: {uploaded.name}")
+
+    if raw_data.empty:
+        raise ValueError("CSV không có dòng dữ liệu.")
 
     use_all = st.checkbox(
         "Dự đoán tất cả các dòng",
-        value=True
+        value=True,
+        key=f"use_all_{source_mode}"
     )
 
     if use_all:
@@ -217,23 +268,26 @@ try:
             min_value=1,
             max_value=len(raw_data),
             value=len(raw_data),
-            step=1
+            step=1,
+            key=f"n_rows_{source_mode}_{len(raw_data)}"
         ))
 
     data = clean_features(raw_data.iloc[:n])
 
-except Exception as exc:
-    st.error(
-        "Không đọc được dữ liệu. Kiểm tra file Drive đã bật "
-        "'Anyone with the link → Viewer' "
-        "và CSV có đủ các cột A1 đến A15."
-    )
-    with st.expander("Chi tiết lỗi"):
-        st.write(str(exc))
-    st.stop()
+    with st.expander("Xem dữ liệu đầu vào"):
+        st.dataframe(data, hide_index=True)
 
-st.caption(
-    f"Dùng {n}/{len(raw_data)} dòng. "
+except Exception as exc:
+    st.error(f"Không đọc được dữ liệu: {exc}")
+
+    if source_mode == "File mẫu trên Google Drive":
+        st.caption(
+            "Kiểm tra file Drive đã bật "
+            "Anyone with the link → Viewer. "
+            "Bạn cũng có thể chuyển sang Upload CSV của bạn."
+        )
+
+    st.stop()
     f"Có {int(data.isna().sum().sum())} ô thiếu; "
     "model xử lý theo quy tắc đã học khi huấn luyện."
 )
