@@ -1,9 +1,17 @@
 from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
+import csv
+import io
+import tempfile
 
+import gdown
 import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
+
 
 st.set_page_config(
     page_title="Credit Approval Dashboard",
@@ -12,33 +20,81 @@ st.set_page_config(
 )
 
 APP_DIR = Path(__file__).resolve().parent
+DRIVE_FILE_ID = "1GDFzbFXjbZMGdNmvy__wDmadeZId6ZfW"
 
 
 @st.cache_resource
 def load_model():
-    # Chỉ load model do bạn huấn luyện và đưa vào repository.
     return joblib.load(APP_DIR / "best_model.joblib")
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def read_drive_csv(file_id):
+    """Tải CSV công khai từ Drive; không dùng cookie đăng nhập."""
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "source.csv"
+
+        downloaded = gdown.download(
+            id=file_id,
+            output=str(path),
+            quiet=True,
+            use_cookies=False
+        )
+
+        if downloaded is None:
+            raise RuntimeError("Google Drive không cho tải file.")
+
+        content = path.read_bytes()
+
+    prefix = content.lstrip()[:500].lower()
+    if b"<!doctype html" in prefix or b"<html" in prefix:
+        raise ValueError("Drive trả về trang HTML thay vì CSV.")
+
+    # Kiểm tra cột trùng trước khi pandas tự đổi tên.
+    text = content.decode("utf-8-sig")
+    header = next(csv.reader(io.StringIO(text)), [])
+    header = [name.strip() for name in header]
+
+    if not header:
+        raise ValueError("CSV không có tiêu đề.")
+
+    if len(header) != len(set(header)):
+        raise ValueError("CSV có tên cột bị trùng.")
+
+    frame = pd.read_csv(
+        io.StringIO(text),
+        na_values=["?", ""]
+    )
+
+    if frame.empty:
+        raise ValueError("CSV không có dòng dữ liệu.")
+
+    checked_at = datetime.now(
+        ZoneInfo("Asia/Ho_Chi_Minh")
+    ).strftime("%d/%m/%Y %H:%M:%S")
+
+    return frame, checked_at
 
 
 try:
     bundle = load_model()
-except Exception as exc:
-    st.error(f"Không load được model: {exc}")
-    st.stop()
+    model = bundle["model"]
+    FEATURES = bundle["features"]
+    NUM_COLS = bundle["numeric_columns"]
+    CAT_COLS = bundle["categorical_columns"]
+    ALLOWED = bundle["allowed_categories"]
 
-model = bundle["model"]
-FEATURES = bundle["features"]
-NUM_COLS = bundle["numeric_columns"]
-CAT_COLS = bundle["categorical_columns"]
-ALLOWED = bundle["allowed_categories"]
+except Exception as exc:
+    st.error(f"Không load được best_model.joblib: {exc}")
+    st.stop()
 
 
 def clean_features(data):
     data = data.copy()
-    data.columns = [str(c).strip() for c in data.columns]
+    data.columns = [str(col).strip() for col in data.columns]
 
     if data.columns.duplicated().any():
-        raise ValueError("CSV có tên cột trùng.")
+        raise ValueError("CSV có tên cột bị trùng.")
 
     missing = set(FEATURES) - set(data.columns)
     if missing:
@@ -83,13 +139,12 @@ def clean_features(data):
 st.title("📊 Credit Approval Dashboard")
 st.write(
     "Dự đoán xác suất chấp nhận (+) / từ chối (-) "
-    "cho một nhóm hồ sơ có cùng mã hóa với dữ liệu UCI."
+    "từ dữ liệu tự động đọc trên Google Drive."
 )
 
 st.caption(
-    "Dữ liệu UCI đã ẩn ý nghĩa A1–A15. "
-    "Kết quả dùng cho thực hành phân tích, "
-    "không phải quyết định phê duyệt tín dụng thực tế."
+    "Nguồn hiện tại: credit_new_10_synthetic.csv — "
+    "dữ liệu giả lập để thử dự đoán, không phải hồ sơ thực tế."
 )
 
 with st.sidebar:
@@ -105,69 +160,76 @@ with st.sidebar:
     )
 
     st.caption(
-        "Ngưỡng thay đổi nhãn phân loại; "
-        "không thay đổi xác suất và tỷ lệ kỳ vọng."
+        "Thay đổi ngưỡng chỉ thay đổi nhãn phân loại, "
+        "không thay đổi xác suất hoặc tỷ lệ kỳ vọng."
     )
 
+    st.subheader("Kết quả trên tập test")
     metrics = bundle.get("metadata", {}).get(
         "best_model_test_metrics", {}
     )
+
     if metrics:
-        st.write("Kết quả trên tập test:")
         st.dataframe(
             pd.DataFrame(
                 metrics.items(),
                 columns=["Chỉ số", "Giá trị"]
-            ),
+            ).round(4),
             hide_index=True
         )
 
-# CSV mẫu chỉ chứa tiêu đề, để người dùng biết cấu trúc cần nhập.
-st.download_button(
-    "Tải mẫu tiêu đề CSV",
-    data=(",".join(FEATURES) + "\n").encode("utf-8-sig"),
-    file_name="credit_input_template.csv",
-    mime="text/csv"
-)
-
-uploaded = st.file_uploader(
-    "Upload CSV có các cột A1 đến A15",
-    type=["csv"]
-)
-
-if uploaded is None:
-    st.info(
-        "Chọn CSV để bắt đầu. Dữ liệu thiếu có thể để trống hoặc ghi '?'."
+    st.caption(
+        "Chấp nhận (+) = lớp 1\n\n"
+        "Từ chối (-) = lớp 0"
     )
-    st.stop()
+
+# Bộ đếm trên trình duyệt yêu cầu chạy lại app mỗi phút.
+st_autorefresh(
+    interval=60_000,
+    debounce=False,
+    key="credit_drive_refresh"
+)
+
+st.info(
+    "Tự đọc dữ liệu khi mở trang và cập nhật khoảng mỗi 60 giây "
+    "khi trang đang mở. Không cần upload."
+)
+
+if st.button("Đọc lại nguồn ngay"):
+    read_drive_csv.clear()
 
 try:
-    raw_data = pd.read_csv(
-        uploaded,
-        encoding="utf-8-sig",
-        na_values=["?", ""]
+    with st.spinner("Đang đọc CSV từ Google Drive..."):
+        raw_data, checked_at = read_drive_csv(DRIVE_FILE_ID)
+
+    st.caption(f"Lần đọc nguồn thành công: {checked_at}")
+
+    use_all = st.checkbox(
+        "Dự đoán tất cả các dòng",
+        value=True
     )
 
-    if raw_data.empty:
-        raise ValueError("CSV không có dòng dữ liệu.")
-
-    # Kiểm tra cấu trúc trước khi dự đoán.
-    raw_data.columns = [
-        str(col).strip() for col in raw_data.columns
-    ]
-
-    n = int(st.number_input(
-        "Số dòng cần dự đoán, lấy từ đầu CSV",
-        min_value=1,
-        max_value=len(raw_data),
-        value=len(raw_data),
-        step=1
-    ))
+    if use_all:
+        n = len(raw_data)
+    else:
+        n = int(st.number_input(
+            "Số dòng cần dự đoán, lấy từ đầu CSV",
+            min_value=1,
+            max_value=len(raw_data),
+            value=len(raw_data),
+            step=1
+        ))
 
     data = clean_features(raw_data.iloc[:n])
 
 except Exception as exc:
-    st.error(f"Dữ liệu đầu vào chưa hợp lệ: {exc}")
+    st.error(
+        "Không đọc được dữ liệu. Kiểm tra file Drive đã bật "
+        "'Anyone with the link → Viewer' "
+        "và CSV có đủ các cột A1 đến A15."
+    )
+    with st.expander("Chi tiết lỗi"):
+        st.write(str(exc))
     st.stop()
 
 st.caption(
@@ -184,7 +246,7 @@ for col in CAT_COLS:
 
     if unseen:
         warnings.append(
-            f"{col}: mã hợp lệ nhưng chưa thấy khi huấn luyện "
+            f"{col}: mã hợp lệ nhưng chưa thấy khi huấn luyện: "
             f"{sorted(unseen)}."
         )
 
@@ -200,8 +262,8 @@ for col in NUM_COLS:
 
 if warnings:
     st.warning(
-        "Dữ liệu có khác biệt với tập huấn luyện. "
-        "Xác suất ở các dòng này có thể kém tin cậy hơn."
+        "Một số dữ liệu khác phạm vi đã quan sát khi huấn luyện; "
+        "xác suất có thể kém tin cậy hơn."
     )
     with st.expander("Xem chi tiết"):
         for message in warnings:
@@ -210,6 +272,7 @@ if warnings:
 try:
     positive_index = list(model.classes_).index(1)
     p_accept = model.predict_proba(data)[:, positive_index]
+
 except Exception as exc:
     st.error(f"Không dự đoán được: {exc}")
     st.stop()
@@ -223,7 +286,9 @@ result["P_chap_nhan"] = p_accept
 result["P_tu_choi"] = p_reject
 result["Nhan_du_doan"] = np.where(accept_mask, "+", "-")
 result["Ket_qua"] = np.where(
-    accept_mask, "Chấp nhận (+)", "Từ chối (-)"
+    accept_mask,
+    "Chấp nhận (+)",
+    "Từ chối (-)"
 )
 
 col1, col2, col3 = st.columns(3)
@@ -270,18 +335,22 @@ left, right = st.columns(2)
 
 with left:
     st.write("So sánh hai cách tính tỷ lệ")
+
     chart_data = summary.set_index("Kết quả")[[
         "Tỷ lệ kỳ vọng (%)",
         "Tỷ lệ theo ngưỡng (%)"
     ]]
+
     st.bar_chart(chart_data)
 
 with right:
     st.write("Phân phối xác suất chấp nhận (+)")
+
     counts, edges = np.histogram(
         p_accept,
         bins=np.linspace(0, 1, 11)
     )
+
     histogram = pd.DataFrame({
         "Khoảng xác suất": [
             f"{edges[i]:.0%}–{edges[i + 1]:.0%}"
@@ -289,6 +358,7 @@ with right:
         ],
         "Số dòng": counts
     }).set_index("Khoảng xác suất")
+
     st.bar_chart(histogram)
 
 st.subheader("Kết quả từng dòng")
@@ -308,5 +378,7 @@ st.download_button(
 
 st.caption(
     "Nguồn huấn luyện: UCI Credit Approval — "
-    "https://doi.org/10.24432/C5FS30"
+    "https://doi.org/10.24432/C5FS30. "
+    "Dữ liệu mới cần cùng mã hóa A1–A15. "
+    "Dashboard cập nhật dự đoán, không tự huấn luyện lại model."
 )
